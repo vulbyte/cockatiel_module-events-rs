@@ -42,8 +42,8 @@ const DEFAULT_MODULE_NAME: &str = "events";
 const DEFAULT_FLAG: &str = "!";
 const DEFAULT_CREATOR_ROLE: &str = "mod";
 const DEFAULT_POLL_CREATOR_ROLE: &str = "mod";
-const DEFAULT_BET_MIN: i64 = 1;
-const DEFAULT_BET_MAX: i64 = 0; // 0 = unlimited
+const DEFAULT_BET_MIN: i32 = 1;
+const DEFAULT_BET_MAX: i32 = 0; // 0 = unlimited
 const DEFAULT_DISPLAY_BIN: &str = "target/release/event_display";
 const DEFAULT_DISPLAY_CONFIG: &str = "event_display.json";
 const DEFAULT_RECONNECT_BASE_SECS: u64 = 1;
@@ -61,8 +61,8 @@ struct ModuleSettings {
     command_flag: String,
     creator_role: String,
     poll_creator_role: String,
-    bet_min: i64,
-    bet_max: i64,
+    bet_min: i32,
+    bet_max: i32,
     display_bin: String,
     display_config: String,
     reconnect_base_secs: u64,
@@ -123,10 +123,12 @@ fn ensure_defaults() -> ModuleSettings {
     let bet_min = ms_read
         .get("bet_min")
         .and_then(|v| v.as_i64())
+        .map(|v| v as i32)
         .unwrap_or(DEFAULT_BET_MIN);
     let bet_max = ms_read
         .get("bet_max")
         .and_then(|v| v.as_i64())
+        .map(|v| v as i32)
         .unwrap_or(DEFAULT_BET_MAX);
     let display_bin = ms_read
         .get("display_bin")
@@ -411,9 +413,9 @@ fn update_for(pred: &Prediction) -> PredictionUpdate {
         prompt: pred.prompt.clone(),
         side_left_label: pred.left_label.clone(),
         side_right_label: pred.right_label.clone(),
-        side_left_total: pred.side_total(Side::Left),
-        side_right_total: pred.side_total(Side::Right),
-        pot: pred.pot(),
+        side_left_total: i64::from(pred.side_total(Side::Left)),
+        side_right_total: i64::from(pred.side_total(Side::Right)),
+        pot: i64::from(pred.pot()),
         status,
         winner_side,
     }
@@ -447,8 +449,8 @@ fn poll_update_for(poll: &Poll) -> PollUpdate {
         poll_id: poll.id.clone(),
         prompt: poll.prompt.clone(),
         options: poll.options.clone(),
-        vote_counts: poll.votes.clone(),
-        total_votes: poll.total(),
+        vote_counts: poll.votes.iter().map(|&v| i64::from(v)).collect(),
+        total_votes: i64::from(poll.total()),
         status,
         winner_index: poll.winner_index,
         hide_counts: poll.hide_counts,
@@ -537,7 +539,7 @@ struct PendingBet {
     user_uuid7: String,
     handle: String,
     side: Side,
-    amount: i64,
+    amount: i32,
 }
 
 // 8 args: the async orchestration touches the socket halves, identity, config,
@@ -605,7 +607,7 @@ async fn handle_bet(
     settings: &ModuleSettings,
     chat: &ChatMessage,
     side: Side,
-    amount: i64,
+    amount: i32,
     active: &Option<Prediction>,
     pending_bet: &mut Option<PendingBet>,
 ) {
@@ -998,6 +1000,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         serde_json::from_str::<serde_json::Value>(&blob).ok()
                                     })
                                     .and_then(|v| v.get("score").and_then(|s| s.as_i64()))
+                                    .map(|s| s as i32)
                                     .unwrap_or(0);
                                 let Some(pred) = active.as_mut() else {
                                     warn!("[events] bet scored for '{}' but the prediction vanished", pb.handle);

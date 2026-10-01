@@ -26,19 +26,19 @@ pub enum Status {
 /// both sides (a bet accumulates into whichever side it was placed on).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Bet {
-    pub left: i64,
-    pub right: i64,
+    pub left: i32,
+    pub right: i32,
 }
 
 impl Bet {
-    pub fn side_amount(&self, side: Side) -> i64 {
+    pub fn side_amount(&self, side: Side) -> i32 {
         match side {
             Side::Left => self.left,
             Side::Right => self.right,
         }
     }
 
-    pub fn total(&self) -> i64 {
+    pub fn total(&self) -> i32 {
         self.left + self.right
     }
 }
@@ -60,14 +60,14 @@ pub struct Prediction {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Payout {
     pub user: String,
-    pub amount: i64,
+    pub amount: i32,
 }
 
 /// One full refund for a cancelled prediction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Refund {
     pub user: String,
-    pub amount: i64,
+    pub amount: i32,
 }
 
 /// Why a bet was rejected.
@@ -101,14 +101,14 @@ impl Prediction {
         }
     }
 
-    pub fn side_total(&self, side: Side) -> i64 {
+    pub fn side_total(&self, side: Side) -> i32 {
         self.bets
             .values()
             .map(|b| b.side_amount(side))
             .sum()
     }
 
-    pub fn pot(&self) -> i64 {
+    pub fn pot(&self) -> i32 {
         self.bets.values().map(Bet::total).sum()
     }
 
@@ -119,11 +119,11 @@ impl Prediction {
         &mut self,
         user: &str,
         side: Side,
-        amount: i64,
-        score: i64,
-        bet_min: i64,
-        bet_max: i64,
-    ) -> Result<i64, BetError> {
+        amount: i32,
+        score: i32,
+        bet_min: i32,
+        bet_max: i32,
+    ) -> Result<i32, BetError> {
         if amount <= 0 || amount < bet_min {
             return Err(BetError::InvalidAmount);
         }
@@ -211,7 +211,7 @@ pub struct Poll {
     pub id: String,
     pub prompt: String,
     pub options: Vec<String>,
-    pub votes: Vec<i64>,
+    pub votes: Vec<i32>,
     pub voters: HashMap<String, usize>,
     pub status: PollStatus,
     pub winner_index: i32,
@@ -247,7 +247,7 @@ impl Poll {
         Ok(option_index)
     }
 
-    pub fn total(&self) -> i64 {
+    pub fn total(&self) -> i32 {
         self.votes.iter().sum()
     }
 
@@ -348,7 +348,7 @@ pub enum ParsedCommand {
     },
     Bet {
         side: Side,
-        amount: i64,
+        amount: i32,
     },
     Stop {
         winner: Option<Side>,
@@ -478,7 +478,7 @@ pub fn parse_command(
             // Bet: `-l <amount>` / `-r <amount>`. Disambiguated from start by
             // the absence of the `start` subcommand token.
             if let Some(v) = flag_value(flags, "l") {
-                if let Ok(amount) = v.trim().parse::<i64>() {
+                if let Ok(amount) = v.trim().parse::<i32>() {
                     return ParsedCommand::Bet {
                         side: Side::Left,
                         amount,
@@ -486,7 +486,7 @@ pub fn parse_command(
                 }
             }
             if let Some(v) = flag_value(flags, "r") {
-                if let Ok(amount) = v.trim().parse::<i64>() {
+                if let Ok(amount) = v.trim().parse::<i32>() {
                     return ParsedCommand::Bet {
                         side: Side::Right,
                         amount,
@@ -580,24 +580,24 @@ pub fn parse_poll_command(
 pub const BAR_WIDTH: usize = 40;
 
 /// Left-side bar: fills left-to-right, proportional to its share of the pot.
-fn bar_left(share: i64, pot: i64) -> String {
+fn bar_left(share: i32, pot: i32) -> String {
     if pot <= 0 {
         return "░".repeat(BAR_WIDTH);
     }
-    let filled = ((share as f64) / (pot as f64) * BAR_WIDTH as f64)
+    let filled = ((share as f32) / (pot as f32) * BAR_WIDTH as f32)
         .round()
-        .min(BAR_WIDTH as f64) as usize;
+        .min(BAR_WIDTH as f32) as usize;
     format!("{}{}", "█".repeat(filled), "░".repeat(BAR_WIDTH - filled))
 }
 
 /// Right-side bar: fills right-to-left, proportional to its share of the pot.
-fn bar_right(share: i64, pot: i64) -> String {
+fn bar_right(share: i32, pot: i32) -> String {
     if pot <= 0 {
         return "░".repeat(BAR_WIDTH);
     }
-    let filled = ((share as f64) / (pot as f64) * BAR_WIDTH as f64)
+    let filled = ((share as f32) / (pot as f32) * BAR_WIDTH as f32)
         .round()
-        .min(BAR_WIDTH as f64) as usize;
+        .min(BAR_WIDTH as f32) as usize;
     format!("{}{}", "░".repeat(BAR_WIDTH - filled), "█".repeat(filled))
 }
 
@@ -607,9 +607,9 @@ fn bar_right(share: i64, pot: i64) -> String {
 pub fn render_screen(
     prompt: &str,
     left_label: &str,
-    left_total: i64,
+    left_total: i32,
     right_label: &str,
-    right_total: i64,
+    right_total: i32,
     status: Status,
     winner: Option<Side>,
 ) -> String {
@@ -665,8 +665,8 @@ pub fn render_idle() -> String {
 pub fn render_poll_screen(
     prompt: &str,
     options: &[String],
-    counts: &[i64],
-    total: i64,
+    counts: &[i32],
+    total: i32,
     status: PollStatus,
     winner_index: i32,
     hide_counts: bool,
@@ -988,7 +988,7 @@ mod tests {
         assert_eq!(pred.status, Status::Resolved);
         assert_eq!(pred.winner, Some(Side::Left));
 
-        let mut by_user: HashMap<&str, i64> =
+        let mut by_user: HashMap<&str, i32> =
             payouts.iter().map(|p| (p.user.as_str(), p.amount)).collect();
         assert_eq!(by_user.remove("u1"), Some(7500));
         assert_eq!(by_user.remove("u2"), Some(7500));
@@ -996,7 +996,7 @@ mod tests {
         assert!(by_user.is_empty());
 
         // Zero-sum invariant: sum(bets) == sum(payouts).
-        let payout_sum: i64 = payouts.iter().map(|p| p.amount).sum();
+        let payout_sum: i32 = payouts.iter().map(|p| p.amount).sum();
         assert_eq!(payout_sum, 15000);
         assert_eq!(pred.pot(), payout_sum);
     }
@@ -1016,7 +1016,7 @@ mod tests {
         assert_eq!(payouts[0].user, "u3");
         assert_eq!(payouts[0].amount, 15000);
 
-        let payout_sum: i64 = payouts.iter().map(|p| p.amount).sum();
+        let payout_sum: i32 = payouts.iter().map(|p| p.amount).sum();
         assert_eq!(payout_sum, 15000);
         assert_eq!(pred.pot(), payout_sum);
     }
@@ -1032,7 +1032,7 @@ mod tests {
 
         let payouts = pred.resolve(Side::Left);
         assert_eq!(payouts[0].amount, 7);
-        let payout_sum: i64 = payouts.iter().map(|p| p.amount).sum();
+        let payout_sum: i32 = payouts.iter().map(|p| p.amount).sum();
         assert_eq!(payout_sum, 7);
         assert_eq!(pred.pot(), payout_sum);
     }
@@ -1049,7 +1049,7 @@ mod tests {
 
         let payouts = pred.resolve(Side::Left);
         assert!(payouts.iter().all(|p| p.amount == 2));
-        let payout_sum: i64 = payouts.iter().map(|p| p.amount).sum();
+        let payout_sum: i32 = payouts.iter().map(|p| p.amount).sum();
         assert_eq!(payout_sum, 4);
         // Never above the pot (nothing created).
         assert!(payout_sum <= pred.pot());
@@ -1079,13 +1079,13 @@ mod tests {
         assert_eq!(pred.status, Status::Cancelled);
         assert_eq!(pred.winner, None);
 
-        let mut by_user: HashMap<&str, i64> =
+        let mut by_user: HashMap<&str, i32> =
             refunds.iter().map(|r| (r.user.as_str(), r.amount)).collect();
         assert_eq!(by_user.remove("u1"), Some(3000)); // 1000 + 2000
         assert_eq!(by_user.remove("u2"), Some(3000));
         assert!(by_user.is_empty());
 
-        let refund_sum: i64 = refunds.iter().map(|r| r.amount).sum();
+        let refund_sum: i32 = refunds.iter().map(|r| r.amount).sum();
         assert_eq!(refund_sum, 6000);
         assert_eq!(refund_sum, pred.pot());
     }

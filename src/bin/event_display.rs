@@ -115,9 +115,9 @@ fn print_update(upd: &PredictionUpdate) {
     let screen = logic::render_screen(
         &upd.prompt,
         &upd.side_left_label,
-        upd.side_left_total,
+        upd.side_left_total as i32,
         &upd.side_right_label,
-        upd.side_right_total,
+        upd.side_right_total as i32,
         status_of(upd.status),
         side_of(&upd.winner_side),
     );
@@ -138,8 +138,8 @@ fn print_poll_update(upd: &PollUpdate) {
     let screen = logic::render_poll_screen(
         &upd.prompt,
         &upd.options,
-        &upd.vote_counts,
-        upd.total_votes,
+        &upd.vote_counts.iter().map(|&v| v as i32).collect::<Vec<_>>(),
+        upd.total_votes as i32,
         poll_status_of(upd.status),
         upd.winner_index,
         upd.hide_counts,
