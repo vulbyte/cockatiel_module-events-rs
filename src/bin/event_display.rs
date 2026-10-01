@@ -19,7 +19,8 @@ use tracing::{info, warn};
 use tracing_subscriber::FmtSubscriber;
 
 use cockatiel_client::{
-    proto::container::Payload,
+    proto::container_for_engine::Payload as EnginePayload,
+    proto::container_for_module::Payload as ModulePayload,
     proto::*,
     CockatielClient,
 };
@@ -83,7 +84,7 @@ struct EngineIdentity {
     module: String,
 }
 
-async fn send_container(write_shared: &Arc<AsyncMutex<WsWriteHalf>>, container: Container) {
+async fn send_container(write_shared: &Arc<AsyncMutex<WsWriteHalf>>, container: ContainerForEngine) {
     let mut buf = Vec::new();
     if container.encode(&mut buf).is_ok() {
         let mut w = write_shared.lock().await;
@@ -179,22 +180,22 @@ async fn hold_update(
                         return true;
                     }
                 };
-                let Ok(container) = Container::decode(data.as_ref()) else { continue };
+                let Ok(container) = ContainerForModule::decode(data.as_ref()) else { continue };
                 let id = identity.lock().await.clone();
                 match container.payload {
-                    Some(Payload::AuthVerify(_)) => {
-                        let reply = Container {
-                            version: 1,
+                    Some(ModulePayload::AuthVerify(_)) => {
+                        let reply = ContainerForEngine {
+                            version: 2,
                             auth_token: id.auth.clone(),
                             module_name: id.module.clone(),
                             module_instance_uuid7: id.instance.clone(),
-                            payload: Some(Payload::AuthVerify(AuthVerify {
+                            payload: Some(EnginePayload::AuthVerify(AuthVerify {
                                 cur_auth: id.auth.clone(),
                             })),
                         };
                         send_container(write_shared, reply).await;
                     }
-                    Some(Payload::PredictionUpdate(upd)) => {
+                    Some(ModulePayload::PredictionUpdate(upd)) => {
                         print_update(&upd);
                         if matches!(status_of(upd.status), Status::Open) {
                             return false; // fresh prediction — back to the main loop
@@ -202,7 +203,7 @@ async fn hold_update(
                         idle = logic::render_idle;
                         sleep.as_mut().reset(Instant::now() + Duration::from_secs(hold_secs));
                     }
-                    Some(Payload::PollUpdate(upd)) => {
+                    Some(ModulePayload::PollUpdate(upd)) => {
                         print_poll_update(&upd);
                         if matches!(poll_status_of(upd.status), PollStatus::Open) {
                             return false; // fresh poll — back to the main loop
@@ -258,22 +259,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             break;
                         }
                     };
-                    let Ok(container) = Container::decode(data.as_ref()) else { continue };
+                    let Ok(container) = ContainerForModule::decode(data.as_ref()) else { continue };
                     let id = identity.lock().await.clone();
                     match container.payload {
-                        Some(Payload::AuthVerify(_)) => {
-                            let reply = Container {
-                                version: 1,
+                        Some(ModulePayload::AuthVerify(_)) => {
+                            let reply = ContainerForEngine {
+                                version: 2,
                                 auth_token: id.auth.clone(),
                                 module_name: id.module.clone(),
                                 module_instance_uuid7: id.instance.clone(),
-                                payload: Some(Payload::AuthVerify(AuthVerify {
+                                payload: Some(EnginePayload::AuthVerify(AuthVerify {
                                     cur_auth: id.auth.clone(),
                                 })),
                             };
                             send_container(&write_shared, reply).await;
                         }
-                        Some(Payload::PredictionUpdate(upd)) => {
+                        Some(ModulePayload::PredictionUpdate(upd)) => {
                             let hold_this = matches!(
                                 status_of(upd.status),
                                 Status::Resolved | Status::Cancelled
@@ -295,7 +296,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         // Polls share the same display window: the last update
                         // received (prediction or poll) wins the screen. A
                         // CLOSED poll holds, then clears to "no active poll".
-                        Some(Payload::PollUpdate(upd)) => {
+                        Some(ModulePayload::PollUpdate(upd)) => {
                             let hold_this = matches!(poll_status_of(upd.status), PollStatus::Closed);
                             print_poll_update(&upd);
                             if hold_this
