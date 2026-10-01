@@ -1,14 +1,13 @@
 {
   "name": "events",
-  "description": "chat events — !pred start/stop/bet (zero-sum parimutuel predictions) and !poll (free-vote polls), one shared display window",
+  "description": "chat events \u2014 !pred start/stop/bet (zero-sum parimutuel predictions) and !poll (free-vote polls), one shared display window",
   "version": "0.1.0",
   "capabilities": "preprocess",
   "root_file": "./src/bin/event_brain.rs",
-  "launch_command": "cargo run",
+  "launch_command": "cargo",
   "command_flags": [
-    "--release",
-    "--bin",
-    "event_brain"
+    "run",
+    "--release"
   ],
   "binary": {
     "linux": {
@@ -28,7 +27,10 @@
     }
   },
   "build_command": "cargo",
-  "build_flags": ["build", "--release"],
+  "build_flags": [
+    "build",
+    "--release"
+  ],
   "credentials": [],
   "autostart": false,
   "terminal": false,
