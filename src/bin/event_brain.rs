@@ -1057,6 +1057,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             audio,
                             audio_type,
                         } = pre;
+                        // Receipt ping: confirm delivery to the engine
+                        // IMMEDIATELY (pure ack, separate from the stage echo
+                        // below) so the engine doesn't resend.
+                        if !uuid.is_empty() {
+                            let receipt = ContainerForEngine {
+                                version: 2,
+                                auth_token: id.auth.clone(),
+                                module_name: id.module.clone(),
+                                module_instance_uuid7: id.instance.clone(),
+                                payload: Some(EnginePayload::MessageAck(MessageAck {
+                                    message_uuid7: uuid.clone(),
+                                })),
+                            };
+                            send_container(&write_for_task, receipt).await;
+                        }
                         if let Some(chat) = &raw_message {
                             if let Some(cmd) = &chat.command {
                                 if cmd.command_name == COMMAND_NAME {
@@ -1197,6 +1212,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         send_container(&write_for_task, ack).await;
                     }
                     Some(ModulePayload::MessageInProcess(process)) => {
+                        // Receipt ping: confirm delivery to the engine
+                        // IMMEDIATELY (pure ack, separate from the stage echo
+                        // below) so the engine doesn't resend.
+                        if !process.message_uuid7.is_empty() {
+                            let receipt = ContainerForEngine {
+                                version: 2,
+                                auth_token: id.auth.clone(),
+                                module_name: id.module.clone(),
+                                module_instance_uuid7: id.instance.clone(),
+                                payload: Some(EnginePayload::MessageAck(MessageAck {
+                                    message_uuid7: process.message_uuid7.clone(),
+                                })),
+                            };
+                            send_container(&write_for_task, receipt).await;
+                        }
                         // Pass-through ack of the in-process stage so it never
                         // stalls.
                         let ack = ContainerForEngine {
