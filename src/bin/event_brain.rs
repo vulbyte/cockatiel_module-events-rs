@@ -413,12 +413,18 @@ fn update_for(pred: &Prediction) -> PredictionUpdate {
         prompt: pred.prompt.clone(),
         side_left_label: pred.left_label.clone(),
         side_right_label: pred.right_label.clone(),
-        side_left_total: pred.side_total(Side::Left),
-        side_right_total: pred.side_total(Side::Right),
-        pot: pred.pot(),
+        side_left_total: wire_total(pred.side_total(Side::Left)),
+        side_right_total: wire_total(pred.side_total(Side::Right)),
+        pot: wire_total(pred.pot()),
         status,
         winner_side,
     }
+}
+
+/// Clamp an internal (i64) total onto the wire's i32 field. Totals are
+/// non-negative; anything past i32::MAX saturates rather than wrapping.
+fn wire_total(v: i64) -> i32 {
+    i32::try_from(v).unwrap_or(i32::MAX)
 }
 
 /// Broadcast a PredictionUpdate after every state change. The engine relays it

@@ -39,7 +39,7 @@ impl Bet {
     }
 
     pub fn total(&self) -> i32 {
-        self.left + self.right
+        self.left.saturating_add(self.right)
     }
 }
 
@@ -101,15 +101,18 @@ impl Prediction {
         }
     }
 
-    pub fn side_total(&self, side: Side) -> i32 {
+    pub fn side_total(&self, side: Side) -> i64 {
         self.bets
             .values()
-            .map(|b| b.side_amount(side))
+            .map(|b| b.side_amount(side) as i64)
             .sum()
     }
 
-    pub fn pot(&self) -> i32 {
-        self.bets.values().map(Bet::total).sum()
+    pub fn pot(&self) -> i64 {
+        self.bets
+            .values()
+            .map(|b| b.left as i64 + b.right as i64)
+            .sum()
     }
 
     /// Record a bet for `user` on `side`, validating the amount against the
@@ -135,8 +138,8 @@ impl Prediction {
         }
         let entry = self.bets.entry(user.to_string()).or_default();
         match side {
-            Side::Left => entry.left += amount,
-            Side::Right => entry.right += amount,
+            Side::Left => entry.left = entry.left.saturating_add(amount),
+            Side::Right => entry.right = entry.right.saturating_add(amount),
         }
         Ok(amount)
     }
@@ -154,11 +157,13 @@ impl Prediction {
             for (user, bet) in &self.bets {
                 let amt = bet.side_amount(winner);
                 if amt > 0 {
-                    let payout = amt * pot / win_total;
+                    // Widen before multiplying: amt × pot can exceed i32 even
+                    // when both factors and the pot fit in i32.
+                    let payout = amt as i64 * pot / win_total;
                     if payout > 0 {
                         out.push(Payout {
                             user: user.clone(),
-                            amount: payout,
+                            amount: i32::try_from(payout).unwrap_or(i32::MAX),
                         });
                     }
                 }
@@ -996,7 +1001,7 @@ mod tests {
         assert!(by_user.is_empty());
 
         // Zero-sum invariant: sum(bets) == sum(payouts).
-        let payout_sum: i32 = payouts.iter().map(|p| p.amount).sum();
+        let payout_sum: i64 = payouts.iter().map(|p| p.amount as i64).sum();
         assert_eq!(payout_sum, 15000);
         assert_eq!(pred.pot(), payout_sum);
     }
@@ -1016,7 +1021,7 @@ mod tests {
         assert_eq!(payouts[0].user, "u3");
         assert_eq!(payouts[0].amount, 15000);
 
-        let payout_sum: i32 = payouts.iter().map(|p| p.amount).sum();
+        let payout_sum: i64 = payouts.iter().map(|p| p.amount as i64).sum();
         assert_eq!(payout_sum, 15000);
         assert_eq!(pred.pot(), payout_sum);
     }
@@ -1032,7 +1037,7 @@ mod tests {
 
         let payouts = pred.resolve(Side::Left);
         assert_eq!(payouts[0].amount, 7);
-        let payout_sum: i32 = payouts.iter().map(|p| p.amount).sum();
+        let payout_sum: i64 = payouts.iter().map(|p| p.amount as i64).sum();
         assert_eq!(payout_sum, 7);
         assert_eq!(pred.pot(), payout_sum);
     }
@@ -1049,7 +1054,7 @@ mod tests {
 
         let payouts = pred.resolve(Side::Left);
         assert!(payouts.iter().all(|p| p.amount == 2));
-        let payout_sum: i32 = payouts.iter().map(|p| p.amount).sum();
+        let payout_sum: i64 = payouts.iter().map(|p| p.amount as i64).sum();
         assert_eq!(payout_sum, 4);
         // Never above the pot (nothing created).
         assert!(payout_sum <= pred.pot());
@@ -1063,6 +1068,42 @@ mod tests {
         assert!(payouts.is_empty());
         assert_eq!(pred.status, Status::Resolved);
         assert_eq!(pred.winner, Some(Side::Right));
+    }
+
+    #[test]
+    fn parimutuel_large_stakes_do_not_overflow() {
+        // Two left bettors at 50k and one right at 50k: pot 150k, winning side
+        // 100k. The old i32 math computed 50_000 * 150_000 = 7.5e9 > i32::MAX,
+        // which panicked in debug and wrapped in release (breaking zero-sum).
+        let mut pred = p("open");
+        pred.place_bet("u1", Side::Left, 50_000, 50_000, 1, 0).unwrap();
+        pred.place_bet("u2", Side::Left, 50_000, 50_000, 1, 0).unwrap();
+        pred.place_bet("u3", Side::Right, 50_000, 50_000, 1, 0).unwrap();
+        assert_eq!(pred.pot(), 150_000);
+
+        let payouts = pred.resolve(Side::Left);
+        let by_user: HashMap<&str, i32> =
+            payouts.iter().map(|p| (p.user.as_str(), p.amount)).collect();
+        assert_eq!(by_user["u1"], 75_000);
+        assert_eq!(by_user["u2"], 75_000);
+
+        // Zero-sum invariant holds: sum(bets) == sum(payouts).
+        let payout_sum: i64 = payouts.iter().map(|p| p.amount as i64).sum();
+        assert_eq!(payout_sum, 150_000);
+        assert_eq!(payout_sum, pred.pot());
+    }
+
+    #[test]
+    fn pot_and_side_totals_accumulate_beyond_i32() {
+        // Summing max-size bets overflows i32; the accumulators must widen
+        // rather than panic or wrap.
+        let mut pred = p("open");
+        let big = i32::MAX;
+        pred.place_bet("u1", Side::Left, big, big, 1, 0).unwrap();
+        pred.place_bet("u2", Side::Left, big, big, 1, 0).unwrap();
+        pred.place_bet("u3", Side::Right, big, big, 1, 0).unwrap();
+        assert_eq!(pred.side_total(Side::Left), 2 * big as i64);
+        assert_eq!(pred.pot(), 3 * big as i64);
     }
 
     // ── 6. Refund on cancel ───────────────────────────────────────────
@@ -1085,7 +1126,7 @@ mod tests {
         assert_eq!(by_user.remove("u2"), Some(3000));
         assert!(by_user.is_empty());
 
-        let refund_sum: i32 = refunds.iter().map(|r| r.amount).sum();
+        let refund_sum: i64 = refunds.iter().map(|r| r.amount as i64).sum();
         assert_eq!(refund_sum, 6000);
         assert_eq!(refund_sum, pred.pot());
     }
