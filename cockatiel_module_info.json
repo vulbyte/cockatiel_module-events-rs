@@ -36,5 +36,10 @@
   "terminal": false,
   "price": 0,
   "min_rank": 0,
-  "authority": 0
+  "authority": 0,
+  "release": {
+    "repo": "vulbyte/cockatiel_module-events-rs",
+    "base_url": "https://github.com/vulbyte/cockatiel_module-events-rs/releases/download",
+    "tag": "v0.1.0"
+  }
 }
