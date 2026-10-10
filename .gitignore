@@ -3,3 +3,4 @@
 .env
 .cockatiel_pb2_cache/
 prediction_display.json
+event_display.json
