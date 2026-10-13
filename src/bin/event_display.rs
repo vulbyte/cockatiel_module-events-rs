@@ -211,6 +211,10 @@ async fn hold_update(
                         idle = logic::render_poll_idle;
                         sleep.as_mut().reset(Instant::now() + Duration::from_secs(hold_secs));
                     }
+                    Some(ModulePayload::Shutdown(_)) => {
+                        info!("Engine requested shutdown — exiting");
+                        std::process::exit(0);
+                    }
                     _ => {}
                 }
             }
@@ -311,6 +315,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             {
                                 break; // stream closed during the hold
                             }
+                        }
+                        Some(ModulePayload::Shutdown(_)) => {
+                            info!("Engine requested shutdown — exiting");
+                            std::process::exit(0);
                         }
                         _ => {}
                     }
