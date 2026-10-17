@@ -1,6 +1,6 @@
 {
   "authority": 0,
-  "autostart": false,
+  "autostart": true,
   "binary": {
     "linux": {
       "aarch64": "target/release/event_brain",
