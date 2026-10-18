@@ -222,6 +222,159 @@ async fn hold_update(
     }
 }
 
+/// Epoch milliseconds.
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+fn timer_label(label: &str) -> String {
+    if label.is_empty() {
+        "Timer".to_string()
+    } else {
+        format!("Timer — {label}")
+    }
+}
+
+fn render_timer(label: &str, remaining_ms: i64) -> String {
+    let secs = (remaining_ms / 1000).max(0);
+    let (m, s) = (secs / 60, secs % 60);
+    format!(
+        "\x1b[2J\x1b[H⏳ {}\n\n   {:02}:{:02} remaining\n",
+        timer_label(label),
+        m,
+        s
+    )
+}
+
+fn render_timer_done(label: &str) -> String {
+    format!("\x1b[2J\x1b[H⏰ {}\n\n   TIME'S UP!\n", timer_label(label))
+}
+
+/// Show a live countdown from `ends_at_ms`, refreshing every 500 ms and
+/// answering probes, until it expires (then hold "time's up" briefly). A
+/// TimerUpdate that cancels/replaces it, a fresh prediction/poll, or a closed
+/// stream ends it early. Returns true if the stream closed.
+async fn run_timer(
+    read: &mut WsReadHalf,
+    write_shared: &Arc<AsyncMutex<WsWriteHalf>>,
+    identity: &Arc<AsyncMutex<EngineIdentity>>,
+    label: &str,
+    ends_at_ms: i64,
+) -> bool {
+    let mut tick = tokio::time::interval(Duration::from_millis(500));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        let remaining = ends_at_ms - now_ms();
+        if remaining <= 0 {
+            print!("{}", render_timer_done(label));
+            let _ = std::io::stdout().flush();
+            return hold_timer(read, write_shared, identity).await;
+        }
+        print!("{}", render_timer(label, remaining));
+        let _ = std::io::stdout().flush();
+        tokio::select! {
+            _ = tick.tick() => {}
+            msg = read.next() => {
+                let Some(msg) = msg else { return true };
+                let data = match msg {
+                    Ok(WsMessage::Binary(d)) => d,
+                    Ok(WsMessage::Close(_)) => return true,
+                    Ok(_) => continue,
+                    Err(_) => return true,
+                };
+                let Ok(container) = ContainerForModule::decode(data.as_ref()) else { continue };
+                let id = identity.lock().await.clone();
+                match container.payload {
+                    Some(ModulePayload::AuthVerify(_)) => {
+                        let reply = ContainerForEngine {
+                            version: 2,
+                            auth_token: id.auth.clone(),
+                            module_name: id.module.clone(),
+                            module_instance_uuid7: id.instance.clone(),
+                            payload: Some(EnginePayload::AuthVerify(AuthVerify { cur_auth: id.auth.clone() })),
+                        };
+                        send_container(write_shared, reply).await;
+                    }
+                    Some(ModulePayload::TimerUpdate(upd)) => {
+                        // Cancelled or replaced by a different timer → main loop.
+                        if upd.cancelled || upd.ends_at_ms != ends_at_ms {
+                            return false;
+                        }
+                    }
+                    Some(ModulePayload::PredictionUpdate(upd)) => {
+                        print_update(&upd);
+                        return false;
+                    }
+                    Some(ModulePayload::PollUpdate(upd)) => {
+                        print_poll_update(&upd);
+                        return false;
+                    }
+                    Some(ModulePayload::Shutdown(_)) => {
+                        info!("Engine requested shutdown — exiting");
+                        std::process::exit(0);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
+/// Hold the "time's up" screen for a few seconds while answering probes.
+async fn hold_timer(
+    read: &mut WsReadHalf,
+    write_shared: &Arc<AsyncMutex<WsWriteHalf>>,
+    identity: &Arc<AsyncMutex<EngineIdentity>>,
+) -> bool {
+    let sleep = tokio::time::sleep(Duration::from_secs(5));
+    tokio::pin!(sleep);
+    loop {
+        tokio::select! {
+            _ = &mut sleep => return false,
+            msg = read.next() => {
+                let Some(msg) = msg else { return true };
+                let data = match msg {
+                    Ok(WsMessage::Binary(d)) => d,
+                    Ok(WsMessage::Close(_)) => return true,
+                    Ok(_) => continue,
+                    Err(_) => return true,
+                };
+                let Ok(container) = ContainerForModule::decode(data.as_ref()) else { continue };
+                let id = identity.lock().await.clone();
+                match container.payload {
+                    Some(ModulePayload::AuthVerify(_)) => {
+                        let reply = ContainerForEngine {
+                            version: 2,
+                            auth_token: id.auth.clone(),
+                            module_name: id.module.clone(),
+                            module_instance_uuid7: id.instance.clone(),
+                            payload: Some(EnginePayload::AuthVerify(AuthVerify { cur_auth: id.auth.clone() })),
+                        };
+                        send_container(write_shared, reply).await;
+                    }
+                    Some(ModulePayload::TimerUpdate(_)) => return false,
+                    Some(ModulePayload::PredictionUpdate(upd)) => {
+                        print_update(&upd);
+                        return false;
+                    }
+                    Some(ModulePayload::PollUpdate(upd)) => {
+                        print_poll_update(&upd);
+                        return false;
+                    }
+                    Some(ModulePayload::Shutdown(_)) => {
+                        info!("Engine requested shutdown — exiting");
+                        std::process::exit(0);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let subscriber = FmtSubscriber::builder()
@@ -314,6 +467,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 .await
                             {
                                 break; // stream closed during the hold
+                            }
+                        }
+                        // A timer takes the window: a live countdown until it
+                        // expires. A cancelled timer clears the screen.
+                        Some(ModulePayload::TimerUpdate(upd)) => {
+                            if upd.cancelled {
+                                print!("{}", logic::render_idle());
+                                let _ = std::io::stdout().flush();
+                            } else {
+                                let label = upd.label.clone();
+                                if run_timer(&mut read, &write_shared, &identity, &label, upd.ends_at_ms).await {
+                                    break; // stream closed during the countdown
+                                }
                             }
                         }
                         Some(ModulePayload::Shutdown(_)) => {

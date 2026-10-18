@@ -38,6 +38,7 @@ type WsWriteHalf = futures_util::stream::SplitSink<
 
 const COMMAND_NAME: &str = "pred";
 const POLL_COMMAND_NAME: &str = "poll";
+const TIMER_COMMAND_NAME: &str = "timer";
 const DEFAULT_MODULE_NAME: &str = "events";
 const DEFAULT_FLAG: &str = "!";
 const DEFAULT_CREATOR_ROLE: &str = "mod";
@@ -364,12 +365,155 @@ async fn register_commands(
                     },
                 ],
             },
+            Command {
+                command_name: TIMER_COMMAND_NAME.to_string(),
+                command_flag: command_flag.to_string(),
+                command_description:
+                    "start a countdown timer — !timer <duration> (e.g. 5m, 90s, 1h30m), or !timer cancel"
+                        .to_string(),
+                command_flags: vec![],
+            },
         ],
             alert_on_unknown_command: false,
         })),
     };
     send_container(write_shared, commands).await;
-    info!("registered !{} and !{} commands", COMMAND_NAME, POLL_COMMAND_NAME);
+    info!(
+        "registered !{}, !{} and !{} commands",
+        COMMAND_NAME, POLL_COMMAND_NAME, TIMER_COMMAND_NAME
+    );
+}
+
+// ── timers ─────────────────────────────────────────────────────────────────
+
+/// Epoch milliseconds.
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// Everything after `<flag><command>`.
+fn strip_command(raw: &str, flag: &str, name: &str) -> String {
+    let mut rest = raw.trim().to_string();
+    if let Some(idx) = rest.find(flag) {
+        rest = rest[idx + flag.len()..].trim_start().to_string();
+    }
+    if rest.starts_with(name) {
+        rest = rest[name.len()..].trim_start().to_string();
+    }
+    rest
+}
+
+/// Parse a duration into seconds: `90`/`90s`, `5m`, `1h`, `1h30m`, `2m30s`.
+fn parse_duration(arg: &str) -> Option<u64> {
+    let a = arg.trim().split_whitespace().next()?.to_lowercase();
+    if a.is_empty() {
+        return None;
+    }
+    if let Ok(n) = a.parse::<u64>() {
+        return (n > 0).then_some(n);
+    }
+    let mut total = 0u64;
+    let mut num = String::new();
+    let mut saw_unit = false;
+    for ch in a.chars() {
+        if ch.is_ascii_digit() {
+            num.push(ch);
+        } else if ch == 'h' || ch == 'm' || ch == 's' {
+            let n: u64 = num.parse().ok()?;
+            total += n
+                * match ch {
+                    'h' => 3600,
+                    'm' => 60,
+                    _ => 1,
+                };
+            num.clear();
+            saw_unit = true;
+        } else {
+            return None;
+        }
+    }
+    if !num.is_empty() || !saw_unit || total == 0 {
+        return None;
+    }
+    Some(total)
+}
+
+/// Human duration for a confirmation ("1h30m", "5m", "90s").
+fn fmt_dur(secs: u64) -> String {
+    let (h, m, s) = (secs / 3600, (secs % 3600) / 60, secs % 60);
+    let mut out = String::new();
+    if h > 0 {
+        out.push_str(&format!("{h}h"));
+    }
+    if m > 0 {
+        out.push_str(&format!("{m}m"));
+    }
+    if s > 0 && h == 0 {
+        out.push_str(&format!("{s}s"));
+    }
+    if out.is_empty() {
+        out = "0s".to_string();
+    }
+    out
+}
+
+/// Broadcast a TimerUpdate. The engine relays it to every connected module; the
+/// events display renders the countdown.
+async fn broadcast_timer(
+    write_shared: &Arc<AsyncMutex<WsWriteHalf>>,
+    identity: &Arc<AsyncMutex<EngineIdentity>>,
+    label: String,
+    ends_at_ms: i64,
+    cancelled: bool,
+) {
+    let id = identity.lock().await.clone();
+    let container = ContainerForEngine {
+        version: 2,
+        auth_token: id.auth,
+        module_name: id.module,
+        module_instance_uuid7: id.instance,
+        payload: Some(EnginePayload::TimerUpdate(TimerUpdate {
+            timer_id: format!("{}", now_ms()),
+            label,
+            ends_at_ms,
+            cancelled,
+        })),
+    };
+    send_container(write_shared, container).await;
+}
+
+#[cfg(test)]
+mod timer_tests {
+    use super::*;
+
+    #[test]
+    fn parses_durations() {
+        assert_eq!(parse_duration("90"), Some(90));
+        assert_eq!(parse_duration("90s"), Some(90));
+        assert_eq!(parse_duration("5m"), Some(300));
+        assert_eq!(parse_duration("1h"), Some(3600));
+        assert_eq!(parse_duration("1h30m"), Some(5400));
+        assert_eq!(parse_duration("2m30s"), Some(150));
+        assert_eq!(parse_duration(" 10m extra"), Some(600));
+    }
+
+    #[test]
+    fn rejects_bad_durations() {
+        for bad in ["", "0", "abc", "5x", "m", "5m10", "1h2"] {
+            assert!(parse_duration(bad).is_none(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn formats_durations() {
+        assert_eq!(fmt_dur(90), "1m30s");
+        assert_eq!(fmt_dur(300), "5m");
+        assert_eq!(fmt_dur(3600), "1h");
+        assert_eq!(fmt_dur(5400), "1h30m");
+    }
 }
 
 /// Send a DatabaseQuery (json sql) to the engine.
@@ -1198,6 +1342,55 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             .await;
                                         }
                                         PollCommand::None => {}
+                                    }
+                                } else if cmd.command_name == TIMER_COMMAND_NAME {
+                                    let arg = strip_command(
+                                        &chat.raw_message,
+                                        &cmd.command_flag,
+                                        &cmd.command_name,
+                                    );
+                                    let arg = arg.trim().to_lowercase();
+                                    if arg == "cancel" || arg == "stop" {
+                                        broadcast_timer(
+                                            &write_for_task,
+                                            &identity_for_task,
+                                            String::new(),
+                                            0,
+                                            true,
+                                        )
+                                        .await;
+                                        send_to_chat(
+                                            &write_for_task,
+                                            &identity_for_task,
+                                            chat,
+                                            "⏳ timer cleared",
+                                        )
+                                        .await;
+                                    } else if let Some(secs) = parse_duration(&arg) {
+                                        let ends = now_ms() + (secs as i64) * 1000;
+                                        broadcast_timer(
+                                            &write_for_task,
+                                            &identity_for_task,
+                                            String::new(),
+                                            ends,
+                                            false,
+                                        )
+                                        .await;
+                                        send_to_chat(
+                                            &write_for_task,
+                                            &identity_for_task,
+                                            chat,
+                                            &format!("⏳ timer set for {}", fmt_dur(secs)),
+                                        )
+                                        .await;
+                                    } else {
+                                        send_to_chat(
+                                            &write_for_task,
+                                            &identity_for_task,
+                                            chat,
+                                            "usage: !timer <duration> — e.g. 5m, 90s, 1h30m",
+                                        )
+                                        .await;
                                     }
                                 }
                             }

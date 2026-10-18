@@ -14,7 +14,7 @@ name = "event_display"
 path = "src/bin/event_display.rs"
 
 [dependencies]
-cockatiel-client = { git = "https://github.com/vulbyte/cockatiel_client-rs", rev = "16120ab927d35c14baf059d5be7d5c6bb37d78bc" }
+cockatiel-client = { git = "https://github.com/vulbyte/cockatiel_client-rs", rev = "b9a90bc1360bf02f02430b3f5abf28e450c34fb6" }
 tokio = { version = "1.38", features = ["full"] }
 tokio-tungstenite = "0.24"
 futures-util = "0.3"
